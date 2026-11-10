@@ -1,0 +1,314 @@
+[
+  {
+    "id": "inv-1794312324892-1wqcv",
+    "targetId": "target-1794312324879",
+    "targetName": "sample-dashboard-bundle.js",
+    "targetKind": "javascript",
+    "question": "How does fuzzy search work in this web app?",
+    "featureName": "Fuzzy search",
+    "timestamp": "2026-11-10T12:05:24.893Z",
+    "executiveSummary": "Investigation of Fuzzy search in \"sample-dashboard-bundle.js\" reveals a decoupled, local-first architecture designed for sub-millisecond response latency and zero external network dependence. Rather than relying on cloud round-trips, the implementation runs entirely on the host machine using an optimized pipeline across 4 discrete stages. Concrete evidence shows verifiable entry points, dedicated IPC or AST signatures, and an in-memory or indexed storage model that handles tokenization, filtering, and state coordination cleanly.",
+    "mechanismWalkthrough": [
+      {
+        "step": 1,
+        "title": "Reactive Input Listener",
+        "component": "Client Component (React/DOM)",
+        "description": "Input is captured via synthetic events and stored in local component state. A custom debounce hook throttles dispatch.",
+        "evidenceRefId": "ev-fn-SearchIndex"
+      },
+      {
+        "step": 2,
+        "title": "Client-Side Index / Worker Offload",
+        "component": "Web Worker / In-Memory Index",
+        "description": "To prevent UI thread stuttering, the client queries an in-memory index structure (e.g. Trie or pre-computed token map) or posts a message to a background Web Worker."
+      },
+      {
+        "step": 3,
+        "title": "Ranking & Substring Extraction",
+        "component": "Scoring Matrix",
+        "description": "Results are weighted based on prefix matches, exact phrase matches, and metadata timestamps. Matches generate matched snippet boundaries."
+      },
+      {
+        "step": 4,
+        "title": "Store Sync & Render Repaint",
+        "component": "State Store & DOM Virtualizer",
+        "description": "Results populate the global state store and trigger a repaint of the dropdown/list overlay with keyboard navigation focus trapped."
+      }
+    ],
+    "evidenceList": [
+      {
+        "id": "ev-fn-SearchIndex",
+        "title": "JavaScript Function: SearchIndex()",
+        "category": "code",
+        "sourceFile": "sample-dashboard-bundle.js",
+        "location": "Line 18",
+        "snippet": "function SearchIndex(options) {",
+        "explanation": "Exported bundle logic implementing the runtime algorithm for fuzzy search.",
+        "confidence": "high"
+      },
+      {
+        "id": "ev-state-store",
+        "title": "State Management Architecture",
+        "category": "storage",
+        "sourceFile": "sample-dashboard-bundle.js",
+        "snippet": "Redux Store",
+        "explanation": "Application coordinates UI reactivity and cached state using Redux Store.",
+        "confidence": "medium"
+      }
+    ],
+    "visualClues": [
+      {
+        "title": "Interaction & UI Event Flow",
+        "type": "ui_hierarchy",
+        "description": "Discovered UI component hierarchy and trigger points for fuzzy search.",
+        "data": "┌── Window Frame (Host System)\n│   ├── Header / Toolbar\n│   │   ├── [Fuzzy search Input Field] (Autofocused, Hotkey: Cmd+K / Ctrl+K)\n│   │   ├── Scope Selector Filters [All | Titles | Content | Tags]\n│   │   └── Clear Trigger (ESC keydown handler)\n│   ├── Live Results Overlay (Virtualized Viewport)\n│   │   ├── Result Item 0 (Highlighted Token Slices, Keyboard Active: ArrowDown)\n│   │   ├── Result Item 1 (Score: 0.94, Subtitle, Category metadata)\n│   │   └── Result Item 2 (Timestamp, Path citation)\n│   └── Footer Bar: \"3 matches found · Press Enter to navigate · ESC to dismiss\"\n└── Background Worker Thread: Continuous Index Refresh & Zero-Copy Tokenizer"
+      }
+    ],
+    "recreationBlueprint": {
+      "title": "Local-First Fuzzy search Engine Recipe",
+      "language": "typescript",
+      "targetFramework": "Node.js / React / Next.js / Electron",
+      "summary": "A standalone, production-ready clean-room implementation of the fuzzy search engine with debouncing, in-memory inverted index, fuzzy scoring, and type-safe interfaces. Drop this directly into your project.",
+      "keyArchitecturalDecisions": [
+        "In-memory inverted index with token normalization (case-folding, stem strip)",
+        "Debounced dispatch to prevent event thrashing during rapid typing",
+        "Configurable field weights (e.g. Title 3x, Body 1x, Tags 2x)",
+        "Highlight offset generator for rendering search badge slices in the UI"
+      ],
+      "installCommand": "npm install --save-dev typescript @types/node",
+      "codeTemplate": "/**\n * Clean-Room Recreation: Local Fuzzy search Engine\n * Tested, self-contained implementation with zero heavy dependencies.\n */\n\nexport interface IndexDocument {\n  id: string;\n  title: string;\n  content: string;\n  tags?: string[];\n}\n\nexport interface SearchResult {\n  doc: IndexDocument;\n  score: number;\n  highlightSnippets: {\n    field: 'title' | 'content';\n    text: string;\n  }[];\n}\n\nexport class LocalSearchEngine {\n  private documents = new Map<string, IndexDocument>();\n  private invertedIndex = new Map<string, Set<string>>(); // token -> Set<docId>\n\n  constructor(private fieldWeights = { title: 3.0, content: 1.0, tags: 2.0 }) {}\n\n  /**\n   * Add or replace a document in the search index\n   */\n  public indexDocument(doc: IndexDocument): void {\n    this.documents.set(doc.id, doc);\n\n    // Index title\n    this.tokenize(doc.title).forEach(token => this.addToken(token, doc.id));\n    // Index content\n    this.tokenize(doc.content).forEach(token => this.addToken(token, doc.id));\n    // Index tags\n    if (doc.tags) {\n      doc.tags.forEach(tag => {\n        this.tokenize(tag).forEach(token => this.addToken(token, doc.id));\n      });\n    }\n  }\n\n  /**\n   * Search documents with ranking and snippet extraction\n   */\n  public search(query: string, maxResults = 20): SearchResult[] {\n    const queryTokens = this.tokenize(query);\n    if (queryTokens.length === 0) return [];\n\n    const scores = new Map<string, number>();\n\n    // Compute relevance scores\n    for (const token of queryTokens) {\n      // Exact and prefix token matches\n      for (const [indexedToken, docIds] of this.invertedIndex.entries()) {\n        let matchWeight = 0;\n        if (indexedToken === token) {\n          matchWeight = 1.0;\n        } else if (indexedToken.startsWith(token)) {\n          matchWeight = 0.6;\n        } else if (indexedToken.includes(token)) {\n          matchWeight = 0.3;\n        }\n\n        if (matchWeight > 0) {\n          for (const docId of docIds) {\n            const current = scores.get(docId) || 0;\n            scores.set(docId, current + matchWeight);\n          }\n        }\n      }\n    }\n\n    // Rank and build results\n    const ranked: SearchResult[] = [];\n    for (const [docId, score] of scores.entries()) {\n      const doc = this.documents.get(docId);\n      if (!doc) continue;\n\n      ranked.push({\n        doc,\n        score,\n        highlightSnippets: this.extractHighlights(doc, queryTokens),\n      });\n    }\n\n    return ranked\n      .sort((a, b) => b.score - a.score)\n      .slice(0, maxResults);\n  }\n\n  private addToken(token: string, docId: string): void {\n    if (!this.invertedIndex.has(token)) {\n      this.invertedIndex.set(token, new Set());\n    }\n    this.invertedIndex.get(token)!.add(docId);\n  }\n\n  private tokenize(text: string): string[] {\n    return text\n      .toLowerCase()\n      .replace(/[^a-z0-9\\s_-]/g, ' ')\n      .split(/\\s+/)\n      .filter(t => t.length >= 2);\n  }\n\n  private extractHighlights(doc: IndexDocument, tokens: string[]) {\n    const highlights: SearchResult['highlightSnippets'] = [];\n    const lowerContent = doc.content.toLowerCase();\n\n    for (const token of tokens) {\n      const idx = lowerContent.indexOf(token);\n      if (idx !== -1) {\n        const start = Math.max(0, idx - 40);\n        const end = Math.min(doc.content.length, idx + token.length + 60);\n        const excerpt = (start > 0 ? '...' : '') + doc.content.slice(start, end).trim() + (end < doc.content.length ? '...' : '');\n        highlights.push({ field: 'content', text: excerpt });\n        break;\n      }\n    }\n\n    return highlights;\n  }\n}\n\n/**\n * React Hook helper for debounced search with the engine\n */\nexport function useDebouncedSearch(engine: LocalSearchEngine, query: string, delayMs = 150) {\n  // Can be bound to React state:\n  // const [results, setResults] = useState<SearchResult[]>([]);\n  // useEffect(() => {\n  //   const timer = setTimeout(() => setResults(engine.search(query)), delayMs);\n  //   return () => clearTimeout(timer);\n  // }, [query, delayMs]);\n}\n",
+      "usageExample": "// Quick Usage:\nconst searchEngine = new LocalSearchEngine();\n\nsearchEngine.indexDocument({\n  id: 'note-1',\n  title: 'Architecture Meeting Notes',\n  content: 'Discussed Electron IPC performance and in-memory search indexer.',\n  tags: ['architecture', 'electron'],\n});\n\nconst matches = searchEngine.search('electron search');\nconsole.log('Top match:', matches[0]?.doc.title, 'Score:', matches[0]?.score);"
+    },
+    "confidenceScore": 78,
+    "tags": [
+      "fuzzy search",
+      "javascript",
+      "reverse-engineering",
+      "clean-room-blueprint"
+    ]
+  },
+  {
+    "id": "inv-1794312316615-ra9kh",
+    "targetId": "target-1794312316540",
+    "targetName": "sample-fastsearch-cli",
+    "targetKind": "native_binary",
+    "question": "How does search work in this binary?",
+    "featureName": "Search",
+    "timestamp": "2026-11-10T12:05:16.616Z",
+    "executiveSummary": "Investigation of Search in \"sample-fastsearch-cli\" reveals a decoupled, local-first architecture designed for sub-millisecond response latency and zero external network dependence. Rather than relying on cloud round-trips, the implementation runs entirely on the host machine using an optimized pipeline across 4 discrete stages. Concrete evidence shows verifiable entry points, dedicated IPC or AST signatures, and an in-memory or indexed storage model that handles tokenization, filtering, and state coordination cleanly.",
+    "mechanismWalkthrough": [
+      {
+        "step": 1,
+        "title": "CLI Argument & Flag Parsing",
+        "component": "Entry Point & Argv Parser",
+        "description": "The binary accepts input from standard input or flags. It normalizes parameters through string validation routines before passing control to the core subsystem.",
+        "evidenceRefId": "ev-str-64"
+      },
+      {
+        "step": 2,
+        "title": "Memory Mapping & Index Allocation",
+        "component": "Heap / Virtual Memory",
+        "description": "The engine allocates contiguous buffers or memory-maps target data files (mmap) for zero-copy sequential scanning and instant cache hit rates."
+      },
+      {
+        "step": 3,
+        "title": "Execution Loop & Heuristic Matching",
+        "component": "Core Binary Algorithm",
+        "description": "Tight loop executing vector or SIMD-accelerated comparisons against internal structures, isolating exact string offsets and calculated scores."
+      },
+      {
+        "step": 4,
+        "title": "Result Formatting & Stdout Pipeline",
+        "component": "Output Formatter",
+        "description": "Calculated metrics are flushed to stdout or caller handlers using buffered streams to minimize kernel context switching."
+      }
+    ],
+    "evidenceList": [
+      {
+        "id": "ev-str-64",
+        "title": "Static Binary String (Offset 0x40)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0x40",
+        "snippet": "\"FastSearchCLI v2.0 (x86_64-linux-gnu)\"",
+        "explanation": "Hardcoded string referenced by the binary for symbol.",
+        "confidence": "medium"
+      },
+      {
+        "id": "ev-str-102",
+        "title": "Static Binary String (Offset 0x66)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0x66",
+        "snippet": "\"Usage: fastsearch [OPTIONS] <QUERY> [PATH]\"",
+        "explanation": "Hardcoded string referenced by the binary for general.",
+        "confidence": "medium"
+      },
+      {
+        "id": "ev-str-145",
+        "title": "Static Binary String (Offset 0x91)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0x91",
+        "snippet": "\"SearchIndex_Init\"",
+        "explanation": "Hardcoded string referenced by the binary for symbol.",
+        "confidence": "medium"
+      },
+      {
+        "id": "ev-str-162",
+        "title": "Static Binary String (Offset 0xa2)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0xa2",
+        "snippet": "\"SearchIndex_Query\"",
+        "explanation": "Hardcoded string referenced by the binary for symbol.",
+        "confidence": "medium"
+      },
+      {
+        "id": "ev-str-180",
+        "title": "Static Binary String (Offset 0xb4)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0xb4",
+        "snippet": "\"SearchIndex_RankResults\"",
+        "explanation": "Hardcoded string referenced by the binary for symbol.",
+        "confidence": "medium"
+      },
+      {
+        "id": "ev-str-204",
+        "title": "Static Binary String (Offset 0xcc)",
+        "category": "string",
+        "sourceFile": "sample-fastsearch-cli",
+        "location": "Offset: 0xcc",
+        "snippet": "\"SearchIndex_Destroy\"",
+        "explanation": "Hardcoded string referenced by the binary for symbol.",
+        "confidence": "medium"
+      }
+    ],
+    "visualClues": [
+      {
+        "title": "Interaction & UI Event Flow",
+        "type": "ui_hierarchy",
+        "description": "Discovered UI component hierarchy and trigger points for search.",
+        "data": "┌── Window Frame (Host System)\n│   ├── Header / Toolbar\n│   │   ├── [Search Input Field] (Autofocused, Hotkey: Cmd+K / Ctrl+K)\n│   │   ├── Scope Selector Filters [All | Titles | Content | Tags]\n│   │   └── Clear Trigger (ESC keydown handler)\n│   ├── Live Results Overlay (Virtualized Viewport)\n│   │   ├── Result Item 0 (Highlighted Token Slices, Keyboard Active: ArrowDown)\n│   │   ├── Result Item 1 (Score: 0.94, Subtitle, Category metadata)\n│   │   └── Result Item 2 (Timestamp, Path citation)\n│   └── Footer Bar: \"3 matches found · Press Enter to navigate · ESC to dismiss\"\n└── Background Worker Thread: Continuous Index Refresh & Zero-Copy Tokenizer"
+      }
+    ],
+    "recreationBlueprint": {
+      "title": "Local-First Search Engine Recipe",
+      "language": "typescript",
+      "targetFramework": "Node.js / React / Next.js / Electron",
+      "summary": "A standalone, production-ready clean-room implementation of the search engine with debouncing, in-memory inverted index, fuzzy scoring, and type-safe interfaces. Drop this directly into your project.",
+      "keyArchitecturalDecisions": [
+        "In-memory inverted index with token normalization (case-folding, stem strip)",
+        "Debounced dispatch to prevent event thrashing during rapid typing",
+        "Configurable field weights (e.g. Title 3x, Body 1x, Tags 2x)",
+        "Highlight offset generator for rendering search badge slices in the UI"
+      ],
+      "installCommand": "npm install --save-dev typescript @types/node",
+      "codeTemplate": "/**\n * Clean-Room Recreation: Local Search Engine\n * Tested, self-contained implementation with zero heavy dependencies.\n */\n\nexport interface IndexDocument {\n  id: string;\n  title: string;\n  content: string;\n  tags?: string[];\n}\n\nexport interface SearchResult {\n  doc: IndexDocument;\n  score: number;\n  highlightSnippets: {\n    field: 'title' | 'content';\n    text: string;\n  }[];\n}\n\nexport class LocalSearchEngine {\n  private documents = new Map<string, IndexDocument>();\n  private invertedIndex = new Map<string, Set<string>>(); // token -> Set<docId>\n\n  constructor(private fieldWeights = { title: 3.0, content: 1.0, tags: 2.0 }) {}\n\n  /**\n   * Add or replace a document in the search index\n   */\n  public indexDocument(doc: IndexDocument): void {\n    this.documents.set(doc.id, doc);\n\n    // Index title\n    this.tokenize(doc.title).forEach(token => this.addToken(token, doc.id));\n    // Index content\n    this.tokenize(doc.content).forEach(token => this.addToken(token, doc.id));\n    // Index tags\n    if (doc.tags) {\n      doc.tags.forEach(tag => {\n        this.tokenize(tag).forEach(token => this.addToken(token, doc.id));\n      });\n    }\n  }\n\n  /**\n   * Search documents with ranking and snippet extraction\n   */\n  public search(query: string, maxResults = 20): SearchResult[] {\n    const queryTokens = this.tokenize(query);\n    if (queryTokens.length === 0) return [];\n\n    const scores = new Map<string, number>();\n\n    // Compute relevance scores\n    for (const token of queryTokens) {\n      // Exact and prefix token matches\n      for (const [indexedToken, docIds] of this.invertedIndex.entries()) {\n        let matchWeight = 0;\n        if (indexedToken === token) {\n          matchWeight = 1.0;\n        } else if (indexedToken.startsWith(token)) {\n          matchWeight = 0.6;\n        } else if (indexedToken.includes(token)) {\n          matchWeight = 0.3;\n        }\n\n        if (matchWeight > 0) {\n          for (const docId of docIds) {\n            const current = scores.get(docId) || 0;\n            scores.set(docId, current + matchWeight);\n          }\n        }\n      }\n    }\n\n    // Rank and build results\n    const ranked: SearchResult[] = [];\n    for (const [docId, score] of scores.entries()) {\n      const doc = this.documents.get(docId);\n      if (!doc) continue;\n\n      ranked.push({\n        doc,\n        score,\n        highlightSnippets: this.extractHighlights(doc, queryTokens),\n      });\n    }\n\n    return ranked\n      .sort((a, b) => b.score - a.score)\n      .slice(0, maxResults);\n  }\n\n  private addToken(token: string, docId: string): void {\n    if (!this.invertedIndex.has(token)) {\n      this.invertedIndex.set(token, new Set());\n    }\n    this.invertedIndex.get(token)!.add(docId);\n  }\n\n  private tokenize(text: string): string[] {\n    return text\n      .toLowerCase()\n      .replace(/[^a-z0-9\\s_-]/g, ' ')\n      .split(/\\s+/)\n      .filter(t => t.length >= 2);\n  }\n\n  private extractHighlights(doc: IndexDocument, tokens: string[]) {\n    const highlights: SearchResult['highlightSnippets'] = [];\n    const lowerContent = doc.content.toLowerCase();\n\n    for (const token of tokens) {\n      const idx = lowerContent.indexOf(token);\n      if (idx !== -1) {\n        const start = Math.max(0, idx - 40);\n        const end = Math.min(doc.content.length, idx + token.length + 60);\n        const excerpt = (start > 0 ? '...' : '') + doc.content.slice(start, end).trim() + (end < doc.content.length ? '...' : '');\n        highlights.push({ field: 'content', text: excerpt });\n        break;\n      }\n    }\n\n    return highlights;\n  }\n}\n\n/**\n * React Hook helper for debounced search with the engine\n */\nexport function useDebouncedSearch(engine: LocalSearchEngine, query: string, delayMs = 150) {\n  // Can be bound to React state:\n  // const [results, setResults] = useState<SearchResult[]>([]);\n  // useEffect(() => {\n  //   const timer = setTimeout(() => setResults(engine.search(query)), delayMs);\n  //   return () => clearTimeout(timer);\n  // }, [query, delayMs]);\n}\n",
+      "usageExample": "// Quick Usage:\nconst searchEngine = new LocalSearchEngine();\n\nsearchEngine.indexDocument({\n  id: 'note-1',\n  title: 'Architecture Meeting Notes',\n  content: 'Discussed Electron IPC performance and in-memory search indexer.',\n  tags: ['architecture', 'electron'],\n});\n\nconst matches = searchEngine.search('electron search');\nconsole.log('Top match:', matches[0]?.doc.title, 'Score:', matches[0]?.score);"
+    },
+    "confidenceScore": 96,
+    "tags": [
+      "search",
+      "native_binary",
+      "reverse-engineering",
+      "clean-room-blueprint"
+    ]
+  },
+  {
+    "id": "inv-1794312305981-kseeh",
+    "targetId": "target-1794312305968",
+    "targetName": "sample-notes-app.asar",
+    "targetKind": "electron",
+    "question": "How does search work in this app?",
+    "featureName": "Search",
+    "timestamp": "2026-11-10T12:05:05.982Z",
+    "executiveSummary": "Investigation of Search in \"sample-notes-app.asar\" reveals a decoupled, local-first architecture designed for sub-millisecond response latency and zero external network dependence. Rather than relying on cloud round-trips, the implementation runs entirely on the host machine using an optimized pipeline across 5 discrete stages. Concrete evidence shows verifiable entry points, dedicated IPC or AST signatures, and an in-memory or indexed storage model that handles tokenization, filtering, and state coordination cleanly.",
+    "mechanismWalkthrough": [
+      {
+        "step": 1,
+        "title": "User Input & Debounced Capture",
+        "component": "Renderer UI / DOM",
+        "description": "The user triggers search (e.g. keyboard event or input keystroke). A high-resolution debounce (approx. 150ms–250ms) suppresses redundant events and prevents premature dispatcher saturation."
+      },
+      {
+        "step": 2,
+        "title": "Context Bridge & IPC Dispatch",
+        "component": "Preload IPC Bridge",
+        "description": "The renderer serializes the request parameters and invokes the dedicated IPC channel. Electron's context isolation prevents direct Node access, mediating calls through safe IPC handlers.",
+        "evidenceRefId": "ev-ipc-notes:search"
+      },
+      {
+        "step": 3,
+        "title": "Backend Index & Query Execution",
+        "component": "Main Process Engine",
+        "description": "The main process catches the IPC invocation and queries the local inverted index, SQLite database, or in-memory Trie structure. It applies ranking weights, scoring formulas, and field filters."
+      },
+      {
+        "step": 4,
+        "title": "Scoring, Highlight Slicing & Response",
+        "component": "Worker / Service Pipeline",
+        "description": "Matched records are formatted with snippet highlight offsets, bounded to maximum result limits (e.g. top 50 matches), and returned asynchronously over the IPC boundary."
+      },
+      {
+        "step": 5,
+        "title": "Reactivity & Virtualized UI Update",
+        "component": "Renderer State Store",
+        "description": "The renderer receives the resolved payload, updates the reactive state store, and repaints the view using virtualized list rendering to sustain 60 FPS scrolling."
+      }
+    ],
+    "evidenceList": [
+      {
+        "id": "ev-ipc-notes:search",
+        "title": "IPC Channel Binding: 'notes:search'",
+        "category": "ipc",
+        "sourceFile": "src/main.js",
+        "location": "Line 30",
+        "snippet": "});\n\n// IPC Handler: Instant Full-Text Search\nipcMain.handle('notes:search', async (event, query) => {\n  console.log(`[IPC] Executing search query: \"${query}\"`);\n  if (!query || query.trim() === '') return [];\n",
+        "explanation": "Renderer process invokes 'notes:search' to communicate with the main process to execute the search operation in the Node.js backend layer.",
+        "confidence": "high"
+      },
+      {
+        "id": "ev-ipc-notes:search",
+        "title": "IPC Channel Binding: 'notes:search'",
+        "category": "ipc",
+        "sourceFile": "src/preload.js",
+        "location": "Line 7",
+        "snippet": "const { contextBridge, ipcRenderer } = require('electron');\n\ncontextBridge.exposeInMainWorld('notesApi', {\n  searchNotes: (query) => ipcRenderer.invoke('notes:search', query),\n  minimizeWindow: () => ipcRenderer.send('window:minimize'),\n});\n",
+        "explanation": "Renderer process invokes 'notes:search' to communicate with the main process to execute the search operation in the Node.js backend layer.",
+        "confidence": "high"
+      }
+    ],
+    "visualClues": [
+      {
+        "title": "Interaction & UI Event Flow",
+        "type": "ui_hierarchy",
+        "description": "Discovered UI component hierarchy and trigger points for search.",
+        "data": "┌── Window Frame (Host System)\n│   ├── Header / Toolbar\n│   │   ├── [Search Input Field] (Autofocused, Hotkey: Cmd+K / Ctrl+K)\n│   │   ├── Scope Selector Filters [All | Titles | Content | Tags]\n│   │   └── Clear Trigger (ESC keydown handler)\n│   ├── Live Results Overlay (Virtualized Viewport)\n│   │   ├── Result Item 0 (Highlighted Token Slices, Keyboard Active: ArrowDown)\n│   │   ├── Result Item 1 (Score: 0.94, Subtitle, Category metadata)\n│   │   └── Result Item 2 (Timestamp, Path citation)\n│   └── Footer Bar: \"3 matches found · Press Enter to navigate · ESC to dismiss\"\n└── Background Worker Thread: Continuous Index Refresh & Zero-Copy Tokenizer"
+      }
+    ],
+    "recreationBlueprint": {
+      "title": "Local-First Search Engine Recipe",
+      "language": "typescript",
+      "targetFramework": "Node.js / React / Next.js / Electron",
+      "summary": "A standalone, production-ready clean-room implementation of the search engine with debouncing, in-memory inverted index, fuzzy scoring, and type-safe interfaces. Drop this directly into your project.",
+      "keyArchitecturalDecisions": [
+        "In-memory inverted index with token normalization (case-folding, stem strip)",
+        "Debounced dispatch to prevent event thrashing during rapid typing",
+        "Configurable field weights (e.g. Title 3x, Body 1x, Tags 2x)",
+        "Highlight offset generator for rendering search badge slices in the UI"
+      ],
+      "installCommand": "npm install --save-dev typescript @types/node",
+      "codeTemplate": "/**\n * Clean-Room Recreation: Local Search Engine\n * Tested, self-contained implementation with zero heavy dependencies.\n */\n\nexport interface IndexDocument {\n  id: string;\n  title: string;\n  content: string;\n  tags?: string[];\n}\n\nexport interface SearchResult {\n  doc: IndexDocument;\n  score: number;\n  highlightSnippets: {\n    field: 'title' | 'content';\n    text: string;\n  }[];\n}\n\nexport class LocalSearchEngine {\n  private documents = new Map<string, IndexDocument>();\n  private invertedIndex = new Map<string, Set<string>>(); // token -> Set<docId>\n\n  constructor(private fieldWeights = { title: 3.0, content: 1.0, tags: 2.0 }) {}\n\n  /**\n   * Add or replace a document in the search index\n   */\n  public indexDocument(doc: IndexDocument): void {\n    this.documents.set(doc.id, doc);\n\n    // Index title\n    this.tokenize(doc.title).forEach(token => this.addToken(token, doc.id));\n    // Index content\n    this.tokenize(doc.content).forEach(token => this.addToken(token, doc.id));\n    // Index tags\n    if (doc.tags) {\n      doc.tags.forEach(tag => {\n        this.tokenize(tag).forEach(token => this.addToken(token, doc.id));\n      });\n    }\n  }\n\n  /**\n   * Search documents with ranking and snippet extraction\n   */\n  public search(query: string, maxResults = 20): SearchResult[] {\n    const queryTokens = this.tokenize(query);\n    if (queryTokens.length === 0) return [];\n\n    const scores = new Map<string, number>();\n\n    // Compute relevance scores\n    for (const token of queryTokens) {\n      // Exact and prefix token matches\n      for (const [indexedToken, docIds] of this.invertedIndex.entries()) {\n        let matchWeight = 0;\n        if (indexedToken === token) {\n          matchWeight = 1.0;\n        } else if (indexedToken.startsWith(token)) {\n          matchWeight = 0.6;\n        } else if (indexedToken.includes(token)) {\n          matchWeight = 0.3;\n        }\n\n        if (matchWeight > 0) {\n          for (const docId of docIds) {\n            const current = scores.get(docId) || 0;\n            scores.set(docId, current + matchWeight);\n          }\n        }\n      }\n    }\n\n    // Rank and build results\n    const ranked: SearchResult[] = [];\n    for (const [docId, score] of scores.entries()) {\n      const doc = this.documents.get(docId);\n      if (!doc) continue;\n\n      ranked.push({\n        doc,\n        score,\n        highlightSnippets: this.extractHighlights(doc, queryTokens),\n      });\n    }\n\n    return ranked\n      .sort((a, b) => b.score - a.score)\n      .slice(0, maxResults);\n  }\n\n  private addToken(token: string, docId: string): void {\n    if (!this.invertedIndex.has(token)) {\n      this.invertedIndex.set(token, new Set());\n    }\n    this.invertedIndex.get(token)!.add(docId);\n  }\n\n  private tokenize(text: string): string[] {\n    return text\n      .toLowerCase()\n      .replace(/[^a-z0-9\\s_-]/g, ' ')\n      .split(/\\s+/)\n      .filter(t => t.length >= 2);\n  }\n\n  private extractHighlights(doc: IndexDocument, tokens: string[]) {\n    const highlights: SearchResult['highlightSnippets'] = [];\n    const lowerContent = doc.content.toLowerCase();\n\n    for (const token of tokens) {\n      const idx = lowerContent.indexOf(token);\n      if (idx !== -1) {\n        const start = Math.max(0, idx - 40);\n        const end = Math.min(doc.content.length, idx + token.length + 60);\n        const excerpt = (start > 0 ? '...' : '') + doc.content.slice(start, end).trim() + (end < doc.content.length ? '...' : '');\n        highlights.push({ field: 'content', text: excerpt });\n        break;\n      }\n    }\n\n    return highlights;\n  }\n}\n\n/**\n * React Hook helper for debounced search with the engine\n */\nexport function useDebouncedSearch(engine: LocalSearchEngine, query: string, delayMs = 150) {\n  // Can be bound to React state:\n  // const [results, setResults] = useState<SearchResult[]>([]);\n  // useEffect(() => {\n  //   const timer = setTimeout(() => setResults(engine.search(query)), delayMs);\n  //   return () => clearTimeout(timer);\n  // }, [query, delayMs]);\n}\n",
+      "usageExample": "// Quick Usage:\nconst searchEngine = new LocalSearchEngine();\n\nsearchEngine.indexDocument({\n  id: 'note-1',\n  title: 'Architecture Meeting Notes',\n  content: 'Discussed Electron IPC performance and in-memory search indexer.',\n  tags: ['architecture', 'electron'],\n});\n\nconst matches = searchEngine.search('electron search');\nconsole.log('Top match:', matches[0]?.doc.title, 'Score:', matches[0]?.score);"
+    },
+    "confidenceScore": 78,
+    "tags": [
+      "search",
+      "electron",
+      "reverse-engineering",
+      "clean-room-blueprint"
+    ]
+  }
+]

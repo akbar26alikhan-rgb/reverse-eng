@@ -1,0 +1,10 @@
+{
+  "name": "notes-desktop",
+  "version": "2.4.1",
+  "description": "Local-first markdown notes app with instant full-text search",
+  "main": "src/main.js",
+  "dependencies": {
+    "sqlite3": "^5.1.7",
+    "flexsearch": "^0.7.43"
+  }
+}
